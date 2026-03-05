@@ -233,6 +233,49 @@ clearInterval(interval);
 });
 
 });
+app.get("/client", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EAVESDROP CLIENT TEST</title>
+<style>
+  body{font-family:monospace;padding:24px}
+  button{margin-right:8px}
+  pre{border:1px solid #000;padding:12px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h2>EAVESDROP CLIENT TEST (same-origin)</h2>
+<button id="ping">PING</button>
+<button id="once">ONCE</button>
+<pre id="out"></pre>
+
+<script>
+const out = document.getElementById("out");
+const log = (t)=> out.textContent += t + "\\n";
+
+document.getElementById("ping").onclick = async ()=>{
+  log("ping...");
+  const r = await fetch("/ping");
+  log("status: " + r.status);
+  log("text: " + await r.text());
+  log("----");
+};
+
+document.getElementById("once").onclick = async ()=>{
+  log("once...");
+  const r = await fetch("/once?t=" + Date.now(), { cache:"no-store" });
+  log("status: " + r.status);
+  log("json: " + JSON.stringify(await r.json(), null, 2));
+  log("----");
+};
+</script>
+</body>
+</html>`);
+});
 
 /* ===== start ===== */
 
