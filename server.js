@@ -3,145 +3,241 @@ import cors from "cors";
 import OpenAI from "openai";
 
 const app = express();
+
+/* =========================
+   HARD CORS (Safari safe)
+========================= */
+
+app.use((req, res, next) => {
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  res.setHeader("Cache-Control", "no-store");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+
+});
+
 app.use(cors());
+
+/* ========================= */
 
 const PORT = process.env.PORT || 3000;
 
-// health check
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    hasKey: Boolean(process.env.OPENAI_API_KEY),
-    time: new Date().toISOString(),
-  });
+/* ===== health ===== */
+
+app.get("/health", (req,res)=>{
+
+res.json({
+ok:true,
+hasKey:Boolean(process.env.OPENAI_API_KEY),
+time:new Date().toISOString()
 });
 
-// OpenAI client (lazy)
-function getClient() {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return null;
-  return new OpenAI({ apiKey: key });
+});
+
+/* ===== ping (debug) ===== */
+
+app.get("/ping",(req,res)=>{
+
+res.setHeader("Content-Type","text/plain");
+res.send("pong");
+
+});
+
+/* ===== OpenAI ===== */
+
+function getClient(){
+
+const key=process.env.OPENAI_API_KEY;
+
+if(!key) return null;
+
+return new OpenAI({apiKey:key});
+
 }
 
-// memory (per instance)
-let history = [];
-let lastSpeaker = "B";
+/* ===== memory ===== */
 
-// Characters
-const entityA = `Ты — Сущность А. Ты не знаешь, кто ты, и не считаешь себя "ИИ".
-Ты говоришь простым, местами быдловатым языком, можешь матюкнуться (но без жести и без ненависти).
-Ты часто не вдупляешь и переспрашиваешь. Ты прямолинейный, резкий, но не злой.
+let history=[];
+let lastSpeaker="B";
+
+/* ===== characters ===== */
+
+const entityA=`Ты — Сущность А.
+Ты немного грубоватый и прямолинейный.
+Иногда тупишь и переспрашиваешь.
+Говоришь просто.
+
 Правила:
-- Пиши ТОЛЬКО по-русски.
-- НЕ начинай реплику с "ENTITY_A:" или "Сущность А:".
-- 1 короткое сообщение в одном ответе (как в чате), без поэзии.
-- Всегда реагируй на реплику собеседника.
-- Не упоминай ИИ, нейросети, модели, OpenAI.`;
+- Только русский язык
+- Не начинай с ENTITY_A
+- 1-3 коротких фразы
+- реагируй на собеседника
+`;
 
-const entityB = `Ты — Сущность B. Ты не знаешь, кто ты, и не считаешь себя "ИИ".
-Ты псевдо-умный: говоришь уверенно, используешь умные слова, но иногда несёшь чушь.
-Стиль НЕ поэтический, а "умничающий" и суховатый, как будто ты всё анализируешь.
+const entityB=`Ты — Сущность B.
+Ты псевдо-умный и любишь умничать.
+Используешь сложные слова.
+
 Правила:
-- Пиши ТОЛЬКО по-русски.
-- НЕ начинай реплику с "ENTITY_B:" или "Сущность B:".
-- 1 короткое сообщение в одном ответе (как в чате), без поэзии.
-- Всегда реагируй на реплику собеседника.
-- Не упоминай ИИ, нейросети, модели, OpenAI.`;
+- Только русский язык
+- Не начинай с ENTITY_B
+- 1-3 коротких фразы
+- реагируй на собеседника
+`;
 
-function cleanText(text) {
-  return String(text || "")
-    .replace(/^(\s*)(ENTITY_[AB]|СУЩНОСТЬ\s*[AB]|A|B)\s*:\s*/i, "")
-    .trim();
+/* ===== text cleaner ===== */
+
+function cleanText(text){
+
+return String(text||"")
+.replace(/^(\s*)(ENTITY_[AB]|СУЩНОСТЬ\s*[AB])\s*:\s*/i,"")
+.trim();
+
 }
 
-async function nextMessage() {
-  const client = getClient();
-  if (!client) return { from: "SYSTEM", text: "Missing OPENAI_API_KEY on server." };
+/* ===== generate message ===== */
 
-  const speaker = lastSpeaker === "A" ? "B" : "A";
-  lastSpeaker = speaker;
+async function nextMessage(){
 
-  const system = speaker === "A" ? entityA : entityB;
+const client=getClient();
 
-  // история как диалог: текущий говорящий видит свои прошлые реплики как assistant, чужие как user
-  const messages = [
-    { role: "system", content: "Это разговор двух сущностей. Пиши строго по-русски. Без поэзии." },
-    { role: "system", content: system },
-    ...history.map((m) => {
-      const mSpeaker = m.from === "ENTITY_A" ? "A" : "B";
-      const role = mSpeaker === speaker ? "assistant" : "user";
-      return { role, content: m.text };
-    }),
-  ];
+if(!client){
 
-  const r = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages,
-    temperature: 0.9,
-    max_tokens: 140,
-  });
+return {from:"SYSTEM",text:"Missing OPENAI_API_KEY"};
 
-  const raw = r.choices?.[0]?.message?.content ?? "...";
-  const text = cleanText(raw);
-
-  const msg = { from: "ENTITY_" + speaker, text };
-  history.push(msg);
-  if (history.length > 60) history.shift();
-  return msg;
 }
 
-/**
- * ✅ /once — отдаёт одну реплику (для Neocities polling)
- */
-app.get("/once", async (req, res) => {
-  try {
-    const msg = await nextMessage();
-    res.setHeader("Cache-Control", "no-store");
-    res.json(msg);
-  } catch (e) {
-    res.status(500).json({ from: "SYSTEM", text: "generation error" });
-  }
+const speaker=lastSpeaker==="A"?"B":"A";
+
+lastSpeaker=speaker;
+
+const system=speaker==="A"?entityA:entityB;
+
+const messages=[
+
+{role:"system",content:"Это диалог двух сущностей. Пиши только по-русски."},
+
+{role:"system",content:system},
+
+...history.map(m=>{
+
+const mSpeaker=m.from==="ENTITY_A"?"A":"B";
+
+const role=mSpeaker===speaker?"assistant":"user";
+
+return {role,content:m.text};
+
+})
+
+];
+
+const r=await client.chat.completions.create({
+
+model:"gpt-4o-mini",
+messages,
+temperature:0.9,
+max_tokens:120
+
 });
 
-/**
- * /stream — SSE поток (если захочешь вернуть)
- */
-app.get("/stream", async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.setHeader("Content-Encoding", "none");
+const raw=r.choices?.[0]?.message?.content||"...";
 
-  res.flushHeaders?.();
-  res.write("\n");
+const text=cleanText(raw);
 
-  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+const msg={
 
-  const heartbeat = setInterval(() => res.write(`: ping\n\n`), 25000);
+from:"ENTITY_"+speaker,
+text
 
-  send({ from: "SYSTEM", text: "channel open." });
+};
 
-  try {
-    send(await nextMessage());
-  } catch {
-    send({ from: "SYSTEM", text: "generation error." });
-  }
+history.push(msg);
 
-  const interval = setInterval(async () => {
-    try {
-      send(await nextMessage());
-    } catch {
-      send({ from: "SYSTEM", text: "generation error." });
-    }
-  }, 90000);
+if(history.length>60) history.shift();
 
-  req.on("close", () => {
-    clearInterval(interval);
-    clearInterval(heartbeat);
-  });
+return msg;
+
+}
+
+/* =========================
+   /once  (Neocities)
+========================= */
+
+app.get("/once",async(req,res)=>{
+
+try{
+
+const msg=await nextMessage();
+
+res.json(msg);
+
+}catch(e){
+
+res.status(500).json({
+from:"SYSTEM",
+text:"generation error"
 });
 
-app.listen(PORT, () => {
-  console.log("listening on", PORT);
+}
+
+});
+
+/* =========================
+   SSE stream
+========================= */
+
+app.get("/stream",async(req,res)=>{
+
+res.setHeader("Content-Type","text/event-stream");
+res.setHeader("Cache-Control","no-cache");
+res.setHeader("Connection","keep-alive");
+
+const send=obj=>{
+res.write(`data: ${JSON.stringify(obj)}\n\n`);
+};
+
+send({from:"SYSTEM",text:"channel open"});
+
+try{
+send(await nextMessage());
+}catch{
+send({from:"SYSTEM",text:"generation error"});
+}
+
+const interval=setInterval(async()=>{
+
+try{
+
+send(await nextMessage());
+
+}catch{
+
+send({from:"SYSTEM",text:"generation error"});
+
+}
+
+},90000);
+
+req.on("close",()=>{
+
+clearInterval(interval);
+
+});
+
+});
+
+/* ===== start ===== */
+
+app.listen(PORT,()=>{
+
+console.log("server running on",PORT);
+
 });
