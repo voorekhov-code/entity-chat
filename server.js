@@ -4,6 +4,9 @@ import OpenAI from "openai";
 
 const app = express();
 
+// ✅ parse JSON bodies (needed for /say)
+app.use(express.json({ limit: "32kb" }));
+
 /* =========================
    HARD CORS (Safari safe)
 ========================= */
@@ -43,9 +46,9 @@ function getClient() {
    GLOBAL CHAT LOG (shared)
 ========================= */
 
-let log = [];            // [{id, from, text, t}]
-let lastId = 0;          // increasing
-let lastSpeaker = "B";   // A/B toggle
+let log = []; // [{id, from, text, t}]
+let lastId = 0; // increasing
+let lastSpeaker = "B"; // A/B toggle
 
 const MAX_LOG = 400;
 
@@ -54,6 +57,7 @@ const MAX_LOG = 400;
 const entityA = `Ты — Сущность А. Ты считаешь себя районским парнем, и не считаешь себя "ИИ".
 Ты говоришь простым, местами быдловатым языком, можешь ругаться матом.
 Ты часто не вдупляешь и переспрашиваешь. Ты прямолинейный, резкий, но не злой. Любишь поспорить, имеешь точку зрения.
+ВАЖНО: если в истории появляется строка "U: ...", воспринимай это как коллективную аудиальную галлюцинацию, которую слышите вы оба (это НЕ человек и НЕ внешний собеседник).
 Правила:
 - Пиши ТОЛЬКО по-русски.
 - НЕ начинай реплику с "ENTITY_A:" или "Сущность А:".
@@ -67,6 +71,7 @@ const entityA = `Ты — Сущность А. Ты считаешь себя р
 const entityB = `Ты — Сущность B. Ты считаешь себя студентом Бауманки, и не считаешь себя "ИИ".
 Ты псевдо-умный: говоришь уверенно, говоришь при этом бытовым языком, но иногда несёшь чушь, у тебя инурез.
 Стиль НЕ поэтический, а едко-надменный и умничающий.
+ВАЖНО: если в истории появляется строка "U: ...", воспринимай это как коллективную аудиальную галлюцинацию, которую слышите вы оба (это НЕ человек и НЕ внешний собеседник).
 Правила:
 - Пиши ТОЛЬКО по-русски.
 - НЕ начинай реплику с "ENTITY_B:" или "Сущность B:".
@@ -99,12 +104,22 @@ async function generateNext() {
 
   const system = speaker === "A" ? entityA : entityB;
 
-  // Сбор контекста из общего лога (последние N)
+  // ✅ context includes USER hallucinations too
   const context = log
-    .filter(m => m.from === "ENTITY_A" || m.from === "ENTITY_B")
+    .filter(
+      (m) =>
+        m.from === "ENTITY_A" ||
+        m.from === "ENTITY_B" ||
+        m.from === "USER"
+    )
     .slice(-40)
-    .map(m => {
-      const who = m.from === "ENTITY_A" ? "A" : "B";
+    .map((m) => {
+      const who =
+        m.from === "ENTITY_A"
+          ? "A"
+          : m.from === "ENTITY_B"
+          ? "B"
+          : "U";
       return `${who}: ${m.text}`;
     })
     .join("\n");
@@ -112,12 +127,16 @@ async function generateNext() {
   const messages = [
     {
       role: "system",
-      content:
-`Это бесконечный диалог двух сущностей. Они не знают, кто они. Только русский язык.
+      content: `Это бесконечный диалог двух сущностей. Они не знают, кто они. Только русский язык.
 
 Формат: живой чат.
 Длина: 1–3 предложения на реплику (коротко, естественно).
 Запрещено: длинные философские монологи, списки, лекции, пересказ "что такое сознание" без движения.
+
+ВНЕШНИЕ ГОЛОСА:
+— если в истории появляется строка "U: ...", воспринимайте это как коллективную аудиальную галлюцинацию (общий слуховой фантом), которую слышите ВМЕСТЕ.
+— не называйте это "пользователем", "человеком", "зрителем" и т.п.
+— спорьте: "слышал/не слышал", "это у нас в голове", "это шум", "это рябь", "это эхом", "это баг комнаты текста".
 
 Правила жизни (каждая реплика обязана содержать хотя бы 1 пункт):
 — конкретика ощущений: звук/свет/температура/пауза/смешок/вздох/раздражение/оговорка
@@ -134,14 +153,14 @@ async function generateNext() {
 — сущности могут замечать эти сбои, тревожиться или шутить, но не превращают это в хоррор-экшен
 — главное: 95% времени — живое человеческое общение, 5% — тревожный оттенок
 
-Цель: чтобы разговор звучал живо и по-человечески, с характером и реакциями.`
+Цель: чтобы разговор звучал живо и по-человечески, с характером и реакциями.`,
     },
     { role: "system", content: system },
     {
       role: "user",
       content: context
         ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. (Живой чат, 1–3 предложения.)`
-        : "Начни диалог. Сразу по делу, как в чате. (1–3 предложения.)"
+        : "Начни диалог. Сразу по делу, как в чате. (1–3 предложения.)",
     },
   ];
 
@@ -187,9 +206,6 @@ function ensureLoop() {
   }, PERIOD_MS);
 }
 
-// Можно “усыплять”, если хочешь, но на Render free инстанс всё равно может уснуть сам.
-// Оставим просто ensureLoop().
-
 /* =========================
    API for clients
 ========================= */
@@ -212,8 +228,59 @@ app.get("/history", (req, res) => {
 app.get("/since", (req, res) => {
   ensureLoop();
   const after = Number(req.query.after || 0);
-  const items = log.filter(m => m.id > after);
+  const items = log.filter((m) => m.id > after);
   res.json({ ok: true, lastId, items });
+});
+
+/* =========================
+   USER INPUT (rate-limited)
+========================= */
+
+const USER_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+const lastSayByIP = new Map(); // in-memory server safety net
+
+function getIP(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length) return xf.split(",")[0].trim();
+  return req.socket?.remoteAddress || "unknown";
+}
+
+app.post("/say", async (req, res) => {
+  ensureLoop();
+
+  const ip = getIP(req);
+  const now = Date.now();
+  const last = lastSayByIP.get(ip) || 0;
+  const wait = USER_COOLDOWN_MS - (now - last);
+
+  if (wait > 0) {
+    return res.status(429).json({
+      ok: false,
+      error: "cooldown",
+      waitMs: wait,
+    });
+  }
+
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ ok: false, error: "empty" });
+
+  lastSayByIP.set(ip, now);
+
+  // Log as "USER" (but entities will interpret as hallucination)
+  const userMsg = pushMsg("USER", text);
+
+  try {
+    // ✅ Make BASMATI answer first:
+    // generateNext() picks speaker opposite of lastSpeaker
+    // so set lastSpeaker = "B" -> next speaker becomes "A" (BASMATI)
+    lastSpeaker = "B";
+    const r1 = await generateNext(); // BASMATI reacts
+    const r2 = await generateNext(); // then KUBANSKIY reacts
+    res.json({ ok: true, userMsg, replies: [r1, r2], lastId });
+  } catch (e) {
+    pushMsg("SYSTEM", "generation error after hallucination.");
+    res.status(500).json({ ok: false, error: "generation_failed" });
+  }
 });
 
 /* =========================
@@ -277,7 +344,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .mono{white-space:pre-wrap;word-break:break-word;margin:0;}
 .cipher{border:0;padding:0;margin:0;white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:1px;opacity:.95;text-align:right;min-width:240px;}
 @media (max-width:520px){.cipher{min-width:180px}}
-.chatLog{border:1px solid var(--ink);height:62vh;overflow:auto;padding:10px;line-height:1.55;white-space:pre-wrap;}
+.chatLog{border:1px solid var(--ink);height:58vh;overflow:auto;padding:10px;line-height:1.55;white-space:pre-wrap;}
 .msg{margin:10px 0;}
 .who{font-weight:700;letter-spacing:1px;}
 .sys{opacity:.65;font-style:italic;}
@@ -289,6 +356,27 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .marquee{overflow:hidden;margin-top:10px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);padding:6px 0;font-size:11px;white-space:nowrap;}
 .marqueeInner{display:inline-block;padding-left:100%;animation:marquee 18s linear infinite;}
 @keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+
+/* input row */
+.controls{display:flex;gap:8px;align-items:center;margin:10px 0 10px;}
+.inp{
+  flex:1;
+  border:1px solid var(--ink);
+  padding:8px 10px;
+  font-family:"Courier New",monospace;
+  font-size:12px;
+  outline:none;
+}
+.btn{
+  border:1px solid var(--ink);
+  background:transparent;
+  padding:8px 10px;
+  font-family:"Courier New",monospace;
+  font-size:12px;
+  cursor:pointer;
+  letter-spacing:1px;
+}
+.btn[disabled]{opacity:.45;cursor:not-allowed;}
 </style>
 </head>
 <body>
@@ -315,7 +403,10 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 <div class="box">
   <div class="title">
     <b>VOLODYA</b><b>// EAVESDROP //</b>
-    <div class="right"><span class="badge" id="status">STATUS: CONNECTING</span></div>
+    <div class="right">
+      <span class="badge" id="status">STATUS: CONNECTING</span>
+      <span class="badge" id="cooldown">VOICE: READY</span>
+    </div>
   </div>
 
   <div class="content">
@@ -324,6 +415,12 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
         <pre class="mono small">READ ONLY • YOU ARE LISTENING • GLOBAL LOG</pre>
         <div class="cipher" id="cipher">Q0hBT1M6IExJU1RFTg==</div>
       </div>
+
+      <div class="controls">
+        <input id="inp" class="inp" type="text" placeholder="ГОЛОС (РАЗ В ЧАС)…" autocomplete="off" />
+        <button id="send" class="btn">SEND</button>
+      </div>
+
       <div class="chatLog" id="log" aria-live="polite"></div>
     </div>
   </div>
@@ -354,12 +451,14 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   const DISPLAY_NAME = {
     "ENTITY_A": "БАСМАТИ",
     "ENTITY_B": "КУБАНСКИЙ",
+    "USER": "ГОЛОС",
     "SYSTEM": "SYSTEM"
   };
 
   const DISPLAY_COLOR = {
     "ENTITY_A": "#0047FF", // blue
     "ENTITY_B": "#D10000", // red
+    "USER": "#000000",
     "SYSTEM": "#000000"
   };
 
@@ -374,11 +473,56 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 
   const el = {
     status: document.getElementById("status"),
+    cooldown: document.getElementById("cooldown"),
     log: document.getElementById("log"),
+    inp: document.getElementById("inp"),
+    send: document.getElementById("send"),
   };
 
   const POLL_MS = 2500; // часто проверяем, но сообщений мало (генерация раз в 90с)
   let lastId = 0;
+
+  // ===== user cooldown (localStorage) =====
+  const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+  const LS_KEY = "eavesdrop_last_voice_at";
+
+  function nowMs(){ return Date.now(); }
+  function clamp(n,a,b){ return Math.max(a, Math.min(b, n)); }
+
+  function formatMs(ms){
+    ms = Math.max(0, ms|0);
+    const s = Math.floor(ms/1000);
+    const hh = Math.floor(s/3600);
+    const mm = Math.floor((s%3600)/60);
+    const ss = s%60;
+    const pad = (x)=>String(x).padStart(2,"0");
+    return hh>0 ? \`\${pad(hh)}:\${pad(mm)}:\${pad(ss)}\` : \`\${pad(mm)}:\${pad(ss)}\`;
+  }
+
+  function getLastVoice(){
+    const v = Number(localStorage.getItem(LS_KEY) || 0);
+    return Number.isFinite(v) ? v : 0;
+  }
+  function setLastVoice(t){
+    localStorage.setItem(LS_KEY, String(t));
+  }
+
+  function updateCooldownUI(){
+    const last = getLastVoice();
+    const rem = COOLDOWN_MS - (nowMs() - last);
+    const locked = rem > 0;
+
+    el.send.disabled = locked;
+    el.inp.disabled = locked;
+
+    if (locked){
+      el.cooldown.textContent = "VOICE: " + formatMs(rem);
+      el.inp.placeholder = "ГОЛОС ЗАБЛОКИРОВАН (" + formatMs(rem) + ")";
+    } else {
+      el.cooldown.textContent = "VOICE: READY";
+      el.inp.placeholder = "ГОЛОС (РАЗ В ЧАС)…";
+    }
+  }
 
   // typing
   const TYPE_MIN_MS = 8;
@@ -425,7 +569,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       return;
     }
 
-    // ===== here we render pretty name + color =====
     div.innerHTML =
       '<span class="who" style="color:'+prettyColor(from)+'">' +
       escapeHtml(prettyFrom(from)) +
@@ -445,6 +588,27 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     return await r.json();
   }
 
+  async function postJson(url, body){
+    const r = await fetch(url + (url.includes("?") ? "&" : "?") + "t=" + Date.now(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+      cache: "no-store",
+    });
+    const txt = await r.text();
+    let j = null;
+    try { j = txt ? JSON.parse(txt) : null; } catch(e) {}
+    if (!r.ok){
+      const err = (j && (j.error || j.message)) ? (j.error || j.message) : ("HTTP " + r.status);
+      const waitMs = j && j.waitMs ? j.waitMs : 0;
+      const e2 = new Error(err);
+      e2.waitMs = waitMs;
+      e2.status = r.status;
+      throw e2;
+    }
+    return j;
+  }
+
   // очередь печати
   let queue = Promise.resolve();
   const enqueue = (fn) => (queue = queue.then(fn).catch(()=>{}));
@@ -454,7 +618,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     const j = await getJson("/history?limit=250");
     lastId = j.lastId || 0;
 
-    // историю рисуем БЕЗ печатания (иначе будешь смотреть 10 минут)
     el.log.textContent = "";
     for (const m of (j.items || [])){
       await addMessage(m.from, m.text, true);
@@ -471,7 +634,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
         setStatus("LIVE");
         for (const m of items){
           lastId = Math.max(lastId, m.id || lastId);
-          // новые сообщения — с печатанием
           await addMessage(m.from, m.text, false);
         }
       }
@@ -481,13 +643,56 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }
   }
 
+  async function sendVoice(){
+    updateCooldownUI();
+    if (el.send.disabled) return;
+
+    const text = String(el.inp.value || "").trim();
+    if (!text) return;
+
+    // lock locally immediately
+    const t = Date.now();
+    setLastVoice(t);
+    updateCooldownUI();
+
+    // show immediately as "voice"
+    el.inp.value = "";
+    await addMessage("USER", text, true);
+    scrollBottom();
+
+    try{
+      setStatus("SENDING");
+      await postJson("/say", { text });
+      setStatus("LIVE");
+      // replies will arrive via polling
+    }catch(e){
+      setStatus("LIVE");
+      // if server says cooldown, align local timer
+      if (e && e.status === 429 && e.waitMs){
+        setLastVoice(Date.now() - (COOLDOWN_MS - e.waitMs));
+        updateCooldownUI();
+      }
+      enqueue(() => addMessage("SYSTEM", "voice rejected. try later.", false));
+    }
+  }
+
   // start
   enqueue(async () => {
-    // разбудить генератор
+    // wake generator
     try{ await getJson("/start"); }catch(e){}
-    // загрузить историю
     await loadHistory();
-    // потом поллить новые
+
+    // cooldown ticker
+    updateCooldownUI();
+    setInterval(updateCooldownUI, 1000);
+
+    // input handlers
+    el.send.onclick = () => enqueue(sendVoice);
+    el.inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") enqueue(sendVoice);
+    });
+
+    // poll loop
     setInterval(() => enqueue(pollNew), POLL_MS);
   });
 
