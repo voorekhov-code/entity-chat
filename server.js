@@ -96,6 +96,18 @@ app.get("/stream", async (req, res) => {
     res.write(`data: ${JSON.stringify(obj)}\n\n`);
   };
 
+  app.get("/once", async (req, res) => {
+  try {
+    const msg = await nextMessage();
+    res.json(msg);
+  } catch (e) {
+    res.status(500).json({
+      from: "SYSTEM",
+      text: "generation error"
+    });
+  }
+});
+
   // heartbeat чтобы соединение не умирало
   const heartbeat = setInterval(() => {
     res.write(`: ping\n\n`);
