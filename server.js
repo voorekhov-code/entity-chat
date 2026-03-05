@@ -110,9 +110,9 @@ async function generateNext() {
     .join("\n");
 
   const messages = [
-  {
-    role: "system",
-    content:
+    {
+      role: "system",
+      content:
 `Это бесконечный диалог двух сущностей. Они не знают, кто они. Только русский язык.
 
 Формат: живой чат.
@@ -135,15 +135,15 @@ async function generateNext() {
 — главное: 95% времени — живое человеческое общение, 5% — тревожный оттенок
 
 Цель: чтобы разговор звучал живо и по-человечески, с характером и реакциями.`
-  },
-  { role: "system", content: system },
-  {
-    role: "user",
-    content: context
-      ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. (Живой чат, 1–3 предложения.)`
-      : "Начни диалог. Сразу по делу, как в чате. (1–3 предложения.)"
-  },
-];
+    },
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: context
+        ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. (Живой чат, 1–3 предложения.)`
+        : "Начни диалог. Сразу по делу, как в чате. (1–3 предложения.)"
+    },
+  ];
 
   const r = await client.chat.completions.create({
     model: "gpt-4o-mini",
@@ -350,6 +350,28 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 (() => {
   "use strict";
 
+  // ===== DISPLAY NAMES + COLORS (ONLY UI, server logic unchanged) =====
+  const DISPLAY_NAME = {
+    "ENTITY_A": "БАСМАТИ",
+    "ENTITY_B": "КУБАНСКИЙ",
+    "SYSTEM": "SYSTEM"
+  };
+
+  const DISPLAY_COLOR = {
+    "ENTITY_A": "#0047FF", // blue
+    "ENTITY_B": "#D10000", // red
+    "SYSTEM": "#000000"
+  };
+
+  function prettyFrom(from){
+    const k = String(from || "");
+    return DISPLAY_NAME[k] || k;
+  }
+  function prettyColor(from){
+    const k = String(from || "");
+    return DISPLAY_COLOR[k] || "#000";
+  }
+
   const el = {
     status: document.getElementById("status"),
     log: document.getElementById("log"),
@@ -403,7 +425,12 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       return;
     }
 
-    div.innerHTML = '<span class="who">' + escapeHtml(from) + ':</span> ';
+    // ===== here we render pretty name + color =====
+    div.innerHTML =
+      '<span class="who" style="color:'+prettyColor(from)+'">' +
+      escapeHtml(prettyFrom(from)) +
+      ':</span> ';
+
     const span = document.createElement("span");
     div.appendChild(span);
     el.log.appendChild(div);
