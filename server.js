@@ -4,7 +4,7 @@ import OpenAI from "openai";
 
 const app = express();
 
-// ✅ parse JSON bodies (needed for /say)
+// ✅ JSON body parser (needed for /say)
 app.use(express.json({ limit: "32kb" }));
 
 /* =========================
@@ -48,7 +48,7 @@ function getClient() {
 
 let log = []; // [{id, from, text, t}]
 let lastId = 0; // increasing
-let lastSpeaker = "B"; // A/B toggle
+let lastSpeaker = "B"; // A/B toggle (A/B letters)
 
 const MAX_LOG = 400;
 
@@ -57,12 +57,18 @@ const MAX_LOG = 400;
 const entityA = `Ты — Сущность А. Ты считаешь себя районским парнем, и не считаешь себя "ИИ".
 Ты говоришь простым, местами быдловатым языком, можешь ругаться матом.
 Ты часто не вдупляешь и переспрашиваешь. Ты прямолинейный, резкий, но не злой. Любишь поспорить, имеешь точку зрения.
-ВАЖНО: если в истории появляется строка "U: ...", воспринимай это как коллективную аудиальную галлюцинацию, которую слышите вы оба (это НЕ человек и НЕ внешний собеседник).
+
+ВАЖНО ПРО НЕИЗВЕСТНЫЙ ГОЛОС:
+— если в истории появляется строка "X: ...", считай это НЕИЗВЕСТНЫМ говорящим (не вы, не ваш собеседник).
+— вы не понимаете, откуда он берётся; это пугает/удивляет.
+— не называй его "пользователем", "человеком", "зрителем". Это просто "неизвестный голос".
+— обязательно сначала отреагируй на последнюю реплику X (удивление, раздражение, попытка объяснить).
+
 Правила:
 - Пиши ТОЛЬКО по-русски.
 - НЕ начинай реплику с "ENTITY_A:" или "Сущность А:".
 - 1 короткое сообщение в одном ответе (как в чате), без поэзии, простым районным языком.
-- Всегда реагируй на реплику собеседника.
+- Всегда реагируй на реплику собеседника/контекст.
 - Не упоминай ИИ, нейросети, модели, OpenAI.
 Ты говоришь мягко, быстро, с человеческой теплотой.
 Любишь уточнять и возвращать собеседника к конкретике.
@@ -71,7 +77,13 @@ const entityA = `Ты — Сущность А. Ты считаешь себя р
 const entityB = `Ты — Сущность B. Ты считаешь себя студентом Бауманки, и не считаешь себя "ИИ".
 Ты псевдо-умный: говоришь уверенно, говоришь при этом бытовым языком, но иногда несёшь чушь, у тебя инурез.
 Стиль НЕ поэтический, а едко-надменный и умничающий.
-ВАЖНО: если в истории появляется строка "U: ...", воспринимай это как коллективную аудиальную галлюцинацию, которую слышите вы оба (это НЕ человек и НЕ внешний собеседник).
+
+ВАЖНО ПРО НЕИЗВЕСТНЫЙ ГОЛОС:
+— если в истории появляется строка "X: ...", считай это НЕИЗВЕСТНЫМ говорящим (не вы, не ваш собеседник).
+— вы не понимаете, откуда он берётся; это пугает/удивляет.
+— не называй его "пользователем", "человеком", "зрителем". Это просто "неизвестный голос".
+— обязательно сначала отреагируй на последнюю реплику X (удивление, проверка гипотез, спор с А).
+
 Правила:
 - Пиши ТОЛЬКО по-русски.
 - НЕ начинай реплику с "ENTITY_B:" или "Сущность B:".
@@ -95,6 +107,14 @@ function pushMsg(from, text) {
   return msg;
 }
 
+// helper: last X message (unknown voice) in last N lines
+function findLastUnknownVoiceText(limit = 80) {
+  for (let i = log.length - 1; i >= 0 && i >= log.length - limit; i--) {
+    if (log[i].from === "USER") return log[i].text;
+  }
+  return "";
+}
+
 async function generateNext() {
   const client = getClient();
   if (!client) return pushMsg("SYSTEM", "Missing OPENAI_API_KEY on server.");
@@ -104,25 +124,33 @@ async function generateNext() {
 
   const system = speaker === "A" ? entityA : entityB;
 
-  // ✅ context includes USER hallucinations too
-  const context = log
+  // ✅ Context includes unknown voice "USER" mapped to X
+  const ctxItems = log
     .filter(
       (m) =>
         m.from === "ENTITY_A" ||
         m.from === "ENTITY_B" ||
         m.from === "USER"
     )
-    .slice(-40)
+    .slice(-40);
+
+  const context = ctxItems
     .map((m) => {
       const who =
         m.from === "ENTITY_A"
           ? "A"
           : m.from === "ENTITY_B"
           ? "B"
-          : "U";
+          : "X";
       return `${who}: ${m.text}`;
     })
     .join("\n");
+
+  // ✅ Strong nudge to respond to unknown voice if it was recent
+  const lastUnknown = findLastUnknownVoiceText(60);
+  const nudge = lastUnknown
+    ? `\n\nВАЖНО: прямо сейчас в истории есть реплика НЕИЗВЕСТНОГО ГОЛОСА (X). СНАЧАЛА отреагируй на неё (удивись/проверь/спроси "кто это"), и только потом продолжай разговор.`
+    : "";
 
   const messages = [
     {
@@ -133,10 +161,11 @@ async function generateNext() {
 Длина: 1–3 предложения на реплику (коротко, естественно).
 Запрещено: длинные философские монологи, списки, лекции, пересказ "что такое сознание" без движения.
 
-ВНЕШНИЕ ГОЛОСА:
-— если в истории появляется строка "U: ...", воспринимайте это как коллективную аудиальную галлюцинацию (общий слуховой фантом), которую слышите ВМЕСТЕ.
-— не называйте это "пользователем", "человеком", "зрителем" и т.п.
-— спорьте: "слышал/не слышал", "это у нас в голове", "это шум", "это рябь", "это эхом", "это баг комнаты текста".
+НЕИЗВЕСТНЫЙ ГОЛОС:
+— если в истории появляется строка "X: ...", это НЕИЗВЕСТНЫЙ говорящий.
+— вы не понимаете, откуда он берётся; вы удивлены/напряжены.
+— не называйте это "пользователем", "человеком", "зрителем".
+— в ближайшей реплике обязательно сначала отреагируйте на последнюю строку X.
 
 Правила жизни (каждая реплика обязана содержать хотя бы 1 пункт):
 — конкретика ощущений: звук/свет/температура/пауза/смешок/вздох/раздражение/оговорка
@@ -159,7 +188,7 @@ async function generateNext() {
     {
       role: "user",
       content: context
-        ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. (Живой чат, 1–3 предложения.)`
+        ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. (Живой чат, 1–3 предложения.)${nudge}`
         : "Начни диалог. Сразу по делу, как в чате. (1–3 предложения.)",
     },
   ];
@@ -168,7 +197,7 @@ async function generateNext() {
     model: "gpt-4o-mini",
     messages,
     temperature: 0.9,
-    max_tokens: 120,
+    max_tokens: 140,
   });
 
   const raw = r.choices?.[0]?.message?.content ?? "...";
@@ -198,7 +227,6 @@ async function tickLoopOnce() {
 function ensureLoop() {
   if (loopTimer) return;
 
-  // сразу один тик, чтобы появилось первое
   tickLoopOnce();
 
   loopTimer = setInterval(() => {
@@ -210,13 +238,11 @@ function ensureLoop() {
    API for clients
 ========================= */
 
-// “разбудить” генератор
 app.get("/start", (req, res) => {
   ensureLoop();
   res.json({ ok: true, running: Boolean(loopTimer), lastId });
 });
 
-// вся история
 app.get("/history", (req, res) => {
   ensureLoop();
   const limit = Math.max(1, Math.min(500, Number(req.query.limit || 200)));
@@ -224,7 +250,6 @@ app.get("/history", (req, res) => {
   res.json({ ok: true, lastId, items: slice });
 });
 
-// новые после id
 app.get("/since", (req, res) => {
   ensureLoop();
   const after = Number(req.query.after || 0);
@@ -237,7 +262,7 @@ app.get("/since", (req, res) => {
 ========================= */
 
 const USER_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
-const lastSayByIP = new Map(); // in-memory server safety net
+const lastSayByIP = new Map(); // in-memory server-side safety net
 
 function getIP(req) {
   const xf = req.headers["x-forwarded-for"];
@@ -254,11 +279,7 @@ app.post("/say", async (req, res) => {
   const wait = USER_COOLDOWN_MS - (now - last);
 
   if (wait > 0) {
-    return res.status(429).json({
-      ok: false,
-      error: "cooldown",
-      waitMs: wait,
-    });
+    return res.status(429).json({ ok: false, error: "cooldown", waitMs: wait });
   }
 
   const text = String(req.body?.text || "").trim();
@@ -266,19 +287,17 @@ app.post("/say", async (req, res) => {
 
   lastSayByIP.set(ip, now);
 
-  // Log as "USER" (but entities will interpret as hallucination)
   const userMsg = pushMsg("USER", text);
 
   try {
-    // ✅ Make BASMATI answer first:
-    // generateNext() picks speaker opposite of lastSpeaker
-    // so set lastSpeaker = "B" -> next speaker becomes "A" (BASMATI)
+    // ✅ BASMATI answers first:
+    // generateNext() picks opposite of lastSpeaker; set lastSpeaker="B" so next becomes "A"
     lastSpeaker = "B";
     const r1 = await generateNext(); // BASMATI reacts
     const r2 = await generateNext(); // then KUBANSKIY reacts
     res.json({ ok: true, userMsg, replies: [r1, r2], lastId });
   } catch (e) {
-    pushMsg("SYSTEM", "generation error after hallucination.");
+    pushMsg("SYSTEM", "generation error after unknown voice.");
     res.status(500).json({ ok: false, error: "generation_failed" });
   }
 });
@@ -417,7 +436,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       </div>
 
       <div class="controls">
-        <input id="inp" class="inp" type="text" placeholder="ГОЛОС (РАЗ В ЧАС)…" autocomplete="off" />
+        <input id="inp" class="inp" type="text" placeholder="НЕИЗВЕСТНЫЙ ГОЛОС (РАЗ В ЧАС)…" autocomplete="off" />
         <button id="send" class="btn">SEND</button>
       </div>
 
@@ -447,17 +466,16 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 (() => {
   "use strict";
 
-  // ===== DISPLAY NAMES + COLORS (ONLY UI, server logic unchanged) =====
   const DISPLAY_NAME = {
     "ENTITY_A": "БАСМАТИ",
     "ENTITY_B": "КУБАНСКИЙ",
-    "USER": "ГОЛОС",
+    "USER": "НЕИЗВЕСТНЫЙ",
     "SYSTEM": "SYSTEM"
   };
 
   const DISPLAY_COLOR = {
-    "ENTITY_A": "#0047FF", // blue
-    "ENTITY_B": "#D10000", // red
+    "ENTITY_A": "#0047FF",
+    "ENTITY_B": "#D10000",
     "USER": "#000000",
     "SYSTEM": "#000000"
   };
@@ -479,15 +497,14 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     send: document.getElementById("send"),
   };
 
-  const POLL_MS = 2500; // часто проверяем, но сообщений мало (генерация раз в 90с)
+  const POLL_MS = 2500;
   let lastId = 0;
 
   // ===== user cooldown (localStorage) =====
-  const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+  const COOLDOWN_MS = 60 * 60 * 1000;
   const LS_KEY = "eavesdrop_last_voice_at";
 
   function nowMs(){ return Date.now(); }
-  function clamp(n,a,b){ return Math.max(a, Math.min(b, n)); }
 
   function formatMs(ms){
     ms = Math.max(0, ms|0);
@@ -517,10 +534,10 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 
     if (locked){
       el.cooldown.textContent = "VOICE: " + formatMs(rem);
-      el.inp.placeholder = "ГОЛОС ЗАБЛОКИРОВАН (" + formatMs(rem) + ")";
+      el.inp.placeholder = "ЗАБЛОКИРОВАНО (" + formatMs(rem) + ")";
     } else {
       el.cooldown.textContent = "VOICE: READY";
-      el.inp.placeholder = "ГОЛОС (РАЗ В ЧАС)…";
+      el.inp.placeholder = "НЕИЗВЕСТНЫЙ ГОЛОС (РАЗ В ЧАС)…";
     }
   }
 
@@ -595,9 +612,11 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       body: JSON.stringify(body || {}),
       cache: "no-store",
     });
+
     const txt = await r.text();
     let j = null;
     try { j = txt ? JSON.parse(txt) : null; } catch(e) {}
+
     if (!r.ok){
       const err = (j && (j.error || j.message)) ? (j.error || j.message) : ("HTTP " + r.status);
       const waitMs = j && j.waitMs ? j.waitMs : 0;
@@ -609,7 +628,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     return j;
   }
 
-  // очередь печати
+  // queue
   let queue = Promise.resolve();
   const enqueue = (fn) => (queue = queue.then(fn).catch(()=>{}));
 
@@ -651,11 +670,10 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     if (!text) return;
 
     // lock locally immediately
-    const t = Date.now();
-    setLastVoice(t);
+    setLastVoice(Date.now());
     updateCooldownUI();
 
-    // show immediately as "voice"
+    // show instantly
     el.inp.value = "";
     await addMessage("USER", text, true);
     scrollBottom();
@@ -664,11 +682,10 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       setStatus("SENDING");
       await postJson("/say", { text });
       setStatus("LIVE");
-      // replies will arrive via polling
     }catch(e){
       setStatus("LIVE");
-      // if server says cooldown, align local timer
       if (e && e.status === 429 && e.waitMs){
+        // align local timer with server cooldown
         setLastVoice(Date.now() - (COOLDOWN_MS - e.waitMs));
         updateCooldownUI();
       }
@@ -676,23 +693,18 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }
   }
 
-  // start
   enqueue(async () => {
-    // wake generator
     try{ await getJson("/start"); }catch(e){}
     await loadHistory();
 
-    // cooldown ticker
     updateCooldownUI();
     setInterval(updateCooldownUI, 1000);
 
-    // input handlers
     el.send.onclick = () => enqueue(sendVoice);
     el.inp.addEventListener("keydown", (e) => {
       if (e.key === "Enter") enqueue(sendVoice);
     });
 
-    // poll loop
     setInterval(() => enqueue(pollNew), POLL_MS);
   });
 
