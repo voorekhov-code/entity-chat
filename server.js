@@ -116,7 +116,7 @@ const entityB = `Ты — Сущность B. Ты считаешь себя с�
 - Всегда реагируй на последнюю мысль (собеседника или X, если это прямо сейчас).
 - Не упоминай ИИ, нейросети, модели, OpenAI.
 Ты чуть колючее, ироничнее.
-Любишь спорить.
+Любишь спорить, но не токсично.
 Иногда замечаешь странности в тексте и пугаешься, но быстро шутишь, чтобы разрядить.`;
 
 function cleanText(text) {
@@ -375,7 +375,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .cipher{border:0;padding:0;margin:0;white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:1px;opacity:.95;text-align:right;min-width:240px;}
 @media (max-width:520px){.cipher{min-width:180px}}
 
-/* chat + custom scroll */
+/* chat (native scrollbar) */
 .chatWrap{border:1px solid var(--ink);padding:10px;}
 .chatLog{
   height:56vh;
@@ -383,9 +383,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   padding:0;
   line-height:1.55;
   white-space:pre-wrap;
-  scrollbar-width:none;         /* Firefox hide */
 }
-.chatLog::-webkit-scrollbar{width:0;height:0;} /* WebKit hide */
 
 .msg{margin:10px 0;}
 .who{font-weight:700;letter-spacing:1px;}
@@ -420,42 +418,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   letter-spacing:1px;
 }
 .btn[disabled]{opacity:.45;cursor:not-allowed;}
-
-/* ===== custom scroll slider (VOL style) ===== */
-.scrollBar{
-  border-top:1px solid var(--ink);
-  margin-top:10px;
-  padding-top:10px;
-  display:flex;
-  align-items:center;
-  gap:10px;
-  flex-wrap:wrap;
-}
-.scrollLabel{font-weight:700;letter-spacing:1px;white-space:nowrap;}
-.scrollValue{margin-left:auto;font-variant-numeric:tabular-nums;letter-spacing:1px;opacity:.85;}
-.range{
-  -webkit-appearance:none;
-  appearance:none;
-  width:260px;
-  max-width:100%;
-  height:18px;
-  background:transparent;
-  outline:none;
-  border:1px solid var(--ink);
-  padding:0;
-}
-.range::-webkit-slider-runnable-track{height:18px;background:transparent;}
-.range::-webkit-slider-thumb{
-  -webkit-appearance:none;
-  appearance:none;
-  width:14px;
-  height:18px;
-  background:var(--ink);
-  border:0;
-  margin-top:0;
-}
-.range::-moz-range-track{height:18px;background:transparent;border:0;}
-.range::-moz-range-thumb{width:14px;height:18px;background:var(--ink);border:0;}
 </style>
 </head>
 <body>
@@ -560,8 +522,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     log: document.getElementById("log"),
     inp: document.getElementById("inp"),
     send: document.getElementById("send"),
-    scroll: document.getElementById("scroll"),
-    scrollVal: document.getElementById("scrollVal"),
   };
 
   const POLL_MS = 2500;
@@ -640,14 +600,13 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     for (let i=0;i<fullText.length;i++){
       const ch = fullText[i];
       caret.insertAdjacentText("beforebegin", ch);
-      updateScrollSliderFromLog(); // keep slider synced
+
       let delay = randInt(TYPE_MIN_MS, TYPE_MAX_MS);
       if (/[.,!?]/.test(ch)) delay += PUNCT_PAUSE_MS;
       if (ch === "\\n") delay += NEWLINE_PAUSE_MS;
       await new Promise(r => setTimeout(r, delay));
     }
     caret.remove();
-    updateScrollSliderFromLog();
   }
 
   async function addMessage(from, text, isInstant=false){
@@ -659,7 +618,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       el.log.appendChild(div);
       if (isInstant) div.textContent = String(text||"");
       else await typeInto(div, String(text||""));
-      updateScrollSliderFromLog();
       return;
     }
 
@@ -674,8 +632,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 
     if (isInstant) span.textContent = String(text||"");
     else await typeInto(span, String(text||""));
-
-    updateScrollSliderFromLog();
   }
 
   async function getJson(url){
@@ -711,52 +667,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   let queue = Promise.resolve();
   const enqueue = (fn) => (queue = queue.then(fn).catch(()=>{}));
 
-  // ===== custom scroll slider logic =====
-  let stickToBottom = true;
-
-  function getMaxScroll(){
-    return Math.max(0, el.log.scrollHeight - el.log.clientHeight);
-  }
-
-  function updateScrollSliderFromLog(){
-    const max = getMaxScroll();
-    const top = el.log.scrollTop;
-
-    // if user is near bottom, stay pinned
-    const nearBottom = max - top < 4;
-    if (nearBottom) stickToBottom = true;
-
-    const val = max === 0 ? 1000 : Math.round((top / max) * 1000);
-    el.scroll.value = String(val);
-
-    if (max === 0) el.scrollVal.textContent = "END";
-    else if (val >= 995) el.scrollVal.textContent = "END";
-    else el.scrollVal.textContent = String(val).padStart(4,"0");
-  }
-
-  function setLogScrollFromSlider(){
-    const max = getMaxScroll();
-    const v = Number(el.scroll.value || 0);
-    const top = max === 0 ? 0 : Math.round((v / 1000) * max);
-    stickToBottom = v >= 995;
-    el.log.scrollTop = top;
-    updateScrollSliderFromLog();
-  }
-
-  function maybeAutoScroll(){
-    if (stickToBottom) scrollBottom();
-  }
-
-  el.log.addEventListener("scroll", () => {
-    // if user manually scrolls up -> unstick
-    const max = getMaxScroll();
-    const top = el.log.scrollTop;
-    stickToBottom = (max - top) < 4;
-    updateScrollSliderFromLog();
-  });
-
-  el.scroll.addEventListener("input", () => setLogScrollFromSlider());
-
   async function loadHistory(){
     setStatus("LOADING");
     const j = await getJson("/history?limit=250");
@@ -768,8 +678,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }
 
     scrollBottom();
-    stickToBottom = true;
-    updateScrollSliderFromLog();
     setStatus("LIVE");
   }
 
@@ -782,7 +690,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
         for (const m of items){
           lastId = Math.max(lastId, m.id || lastId);
           await addMessage(m.from, m.text, false);
-          maybeAutoScroll();
+          scrollBottom();
         }
       }
     }catch(e){
@@ -803,8 +711,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 
     el.inp.value = "";
     await addMessage("USER", text, true);
-    stickToBottom = true;
-    maybeAutoScroll();
+    scrollBottom();
 
     try{
       setStatus("SENDING");
@@ -832,9 +739,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     el.inp.addEventListener("keydown", (e) => {
       if (e.key === "Enter") enqueue(sendVoice);
     });
-
-    // keep slider sane on resizes
-    window.addEventListener("resize", () => updateScrollSliderFromLog());
 
     setInterval(() => enqueue(pollNew), POLL_MS);
   });
