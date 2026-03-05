@@ -30,6 +30,10 @@ const BUILD_ID =
   process.env.GIT_COMMIT ||
   `local-${Date.now()}`;
 
+/* =========================
+   Health / ping
+========================= */
+
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -63,7 +67,7 @@ const MAX_LOG = 400;
 // ✅ one-time "unknown voice" reaction control
 let pendingUnknownId = 0; // last USER message id that should trigger 1 short reaction
 let handledUnknownId = 0; // last USER message id already handled
-let pendingUnknownFirstSpeaker = "A"; // who should react first to the pending X (random)
+let pendingUnknownFirstSpeaker = "A"; // who should react first (random)
 
 /* ===== characters ===== */
 
@@ -73,11 +77,12 @@ const entityA = `Ты — Сущность А. Ты считаешь себя р
 
 ПРО НЕИЗВЕСТНЫЙ ГОЛОС:
 — если в истории появляется строка "X: ...", это неизвестный говорящий.
-— можно КРАТКО удивиться/уточнить "кто это" ОДИН РАЗ, и дальше НЕ строить весь диалог вокруг X.
+— можно кратко удивиться/уточнить "кто это", но НЕ зацикливаться.
+— если реплика X несёт тему (страх/любовь/работа/память/шум/вода/город и т.п.), иногда можно подхватить её как повод поговорить дальше.
 
 ФОРМАТ:
 — 1 реплика, 1–3 предложения.
-— НЕ используй списки и пункты.
+— НЕ используй списки/пункты.
 — НЕ начинай сообщение с "-" или "—" или "–".
 — не ставь метки "A:" "B:" "X:" в начале.
 
@@ -96,11 +101,12 @@ const entityB = `Ты — Сущность B. Ты считаешь себя с�
 
 ПРО НЕИЗВЕСТНЫЙ ГОЛОС:
 — если в истории появляется строка "X: ...", это неизвестный говорящий.
-— можно КРАТКО удивиться/уточнить "кто это" ОДИН РАЗ, и дальше НЕ строить весь диалог вокруг X.
+— можно кратко удивиться/уточнить "кто это", но НЕ зацикливаться.
+— если реплика X несёт тему, иногда можно подхватить её как повод для разговора, но без навязчивости.
 
 ФОРМАТ:
 — 1 реплика, 1–3 предложения.
-— НЕ используй списки и пункты.
+— НЕ используй списки/пункты.
 — НЕ начинай сообщение с "-" или "—" или "–".
 — не ставь метки "A:" "B:" "X:" в начале.
 
@@ -116,8 +122,7 @@ const entityB = `Ты — Сущность B. Ты считаешь себя с�
 function cleanText(text) {
   return String(text || "")
     .replace(/^(\s*)(ENTITY_[AB]|СУЩНОСТЬ\s*[AB])\s*:\s*/i, "")
-    // ✅ kill leading bullet/hyphen that models sometimes add
-    .replace(/^\s*[-—–]\s+/, "")
+    .replace(/^\s*[-—–]\s+/, "") // kill leading bullet/hyphen
     .trim();
 }
 
@@ -153,7 +158,7 @@ async function generateNext() {
     pendingUnknownId > handledUnknownId && speaker === pendingUnknownFirstSpeaker;
 
   const oneTimeNudge = shouldReactOnce
-    ? `\n\nВажно: в истории есть свежая реплика X (неизвестный голос). В ЭТОЙ реплике коротко (одной фразой) отреагируй на X (удивление/вопрос), а затем СРАЗУ продолжи обычный разговор. В следующих репликах НЕ возвращайся к этому и НЕ строй вокруг X сюжет.`
+    ? `\n\nВажно: в истории есть свежая реплика X (неизвестный голос). В ЭТОЙ реплике коротко (1 фразой) отреагируй на X (удивление/вопрос), а затем продолжи разговор как обычно. Не делай X центром мира, но если в X есть нормальная тема, ты можешь аккуратно использовать её как повод для дальнейшего разговора.`
     : "";
 
   const messages = [
@@ -170,9 +175,11 @@ async function generateNext() {
 — никаких маркированных пунктов
 — не пиши "A:"/"B:"/"X:" в начале ответа
 
-НЕИЗВЕСТНЫЙ ГОЛОС:
-— если в истории есть строка "X: ...", это неизвестный говорящий
-— допускается короткая реакция ОДИН РАЗ, дальше разговор идет своим ходом
+НЕИЗВЕСТНЫЙ ГОЛОС (X):
+— X появляется иногда и кажется "чужим"
+— можно кратко удивиться/уточнить
+— НЕ превращай X в вечную тему
+— но если X закинул интересную тему, иногда можно подхватить её и развить (примерно 1 раз в 8 реплик), как будто это просто странный повод поговорить
 
 Правила жизни:
 — конкретика ощущений (звук/свет/пауза/вздох/смех/раздражение)
@@ -205,20 +212,18 @@ async function generateNext() {
 
   const saved = pushMsg("ENTITY_" + speaker, text);
 
-  // ✅ mark unknown voice handled right after the chosen first speaker reacts once
   if (shouldReactOnce) handledUnknownId = pendingUnknownId;
 
   return saved;
 }
 
 /* =========================
-   GENERATION LOOP (server-side)
+   GENERATION LOOP
 ========================= */
 
 const PERIOD_MS = 90000;
 
 let loopTimer = null;
-let loopRunning = false;
 
 async function tickLoopOnce() {
   try {
@@ -231,16 +236,12 @@ async function tickLoopOnce() {
 
 function ensureLoop() {
   if (loopTimer) return;
-
   tickLoopOnce();
-
-  loopTimer = setInterval(() => {
-    tickLoopOnce();
-  }, PERIOD_MS);
+  loopTimer = setInterval(() => tickLoopOnce(), PERIOD_MS);
 }
 
 /* =========================
-   API for clients
+   API
 ========================= */
 
 app.get("/start", (req, res) => {
@@ -294,7 +295,7 @@ app.post("/say", async (req, res) => {
 
   const userMsg = pushMsg("USER", text);
 
-  // ✅ mark this X "pending", and choose random first responder
+  // ✅ mark this X "pending", choose random first responder
   pendingUnknownId = userMsg.id;
   pendingUnknownFirstSpeaker = Math.random() < 0.5 ? "A" : "B";
 
@@ -303,8 +304,8 @@ app.post("/say", async (req, res) => {
     // generateNext() speaks the opposite of lastSpeaker
     lastSpeaker = pendingUnknownFirstSpeaker === "A" ? "B" : "A";
 
-    const r1 = await generateNext(); // random one reacts (one-time if X pending)
-    const r2 = await generateNext(); // the other reacts to the reaction
+    const r1 = await generateNext(); // random one reacts
+    const r2 = await generateNext(); // other reacts to reaction
     res.json({ ok: true, build: BUILD_ID, userMsg, replies: [r1, r2], lastId });
   } catch (e) {
     pushMsg("SYSTEM", "generation error after unknown voice.");
@@ -373,12 +374,25 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .mono{white-space:pre-wrap;word-break:break-word;margin:0;}
 .cipher{border:0;padding:0;margin:0;white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:1px;opacity:.95;text-align:right;min-width:240px;}
 @media (max-width:520px){.cipher{min-width:180px}}
-.chatLog{border:1px solid var(--ink);height:56vh;overflow:auto;padding:10px;line-height:1.55;white-space:pre-wrap;}
+
+/* chat + custom scroll */
+.chatWrap{border:1px solid var(--ink);padding:10px;}
+.chatLog{
+  height:56vh;
+  overflow:auto;
+  padding:0;
+  line-height:1.55;
+  white-space:pre-wrap;
+  scrollbar-width:none;         /* Firefox hide */
+}
+.chatLog::-webkit-scrollbar{width:0;height:0;} /* WebKit hide */
+
 .msg{margin:10px 0;}
 .who{font-weight:700;letter-spacing:1px;}
 .sys{opacity:.65;font-style:italic;}
 .caret{display:inline-block;width:8px;margin-left:2px;animation:blink 1s steps(1,end) infinite;}
 @keyframes blink{0%{opacity:1}50%{opacity:0}100%{opacity:1}}
+
 .footerBox{border:2px solid var(--ink);margin:10px 0;padding:10px;box-sizing:border-box;}
 .footerText{line-height:1.35;}
 .footerText .accent{border:1px solid var(--ink);padding:1px 4px;}
@@ -407,14 +421,22 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 }
 .btn[disabled]{opacity:.45;cursor:not-allowed;}
 
-/* ===== custom slider (VOL style) ===== */
-.sliderWrap{border:1px solid var(--ink);padding:8px 10px;margin:8px 0 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-.sliderLabel{font-weight:700;letter-spacing:1px;white-space:nowrap;}
-.sliderValue{margin-left:auto;font-variant-numeric:tabular-nums;letter-spacing:1px;}
+/* ===== custom scroll slider (VOL style) ===== */
+.scrollBar{
+  border-top:1px solid var(--ink);
+  margin-top:10px;
+  padding-top:10px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.scrollLabel{font-weight:700;letter-spacing:1px;white-space:nowrap;}
+.scrollValue{margin-left:auto;font-variant-numeric:tabular-nums;letter-spacing:1px;opacity:.85;}
 .range{
   -webkit-appearance:none;
   appearance:none;
-  width:240px;
+  width:260px;
   max-width:100%;
   height:18px;
   background:transparent;
@@ -422,10 +444,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   border:1px solid var(--ink);
   padding:0;
 }
-.range::-webkit-slider-runnable-track{
-  height:18px;
-  background:transparent;
-}
+.range::-webkit-slider-runnable-track{height:18px;background:transparent;}
 .range::-webkit-slider-thumb{
   -webkit-appearance:none;
   appearance:none;
@@ -435,25 +454,8 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   border:0;
   margin-top:0;
 }
-.range::-moz-range-track{
-  height:18px;
-  background:transparent;
-  border:0;
-}
-.range::-moz-range-thumb{
-  width:14px;
-  height:18px;
-  background:var(--ink);
-  border:0;
-}
-.sliderTicks{
-  width:100%;
-  display:flex;
-  justify-content:space-between;
-  font-size:10px;
-  opacity:.85;
-  letter-spacing:1px;
-}
+.range::-moz-range-track{height:18px;background:transparent;border:0;}
+.range::-moz-range-thumb{width:14px;height:18px;background:var(--ink);border:0;}
 </style>
 </head>
 <body>
@@ -498,14 +500,16 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
         <button id="send" class="btn">SEND</button>
       </div>
 
-      <div class="sliderWrap" aria-label="tempo control">
-        <div class="sliderLabel">TEMPO</div>
-        <input id="tempo" class="range" type="range" min="0" max="100" step="1" value="50" />
-        <div id="tempoVal" class="sliderValue">050</div>
-        <div class="sliderTicks"><span>SLOW</span><span>NORM</span><span>FAST</span></div>
+      <div class="chatWrap">
+        <div class="chatLog" id="log" aria-live="polite"></div>
+
+        <div class="scrollBar">
+          <div class="scrollLabel">SCROLL</div>
+          <input id="scroll" class="range" type="range" min="0" max="1000" step="1" value="1000" />
+          <div id="scrollVal" class="scrollValue">END</div>
+        </div>
       </div>
 
-      <div class="chatLog" id="log" aria-live="polite"></div>
     </div>
   </div>
 </div>
@@ -531,7 +535,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 (() => {
   "use strict";
 
-  // ✅ build id from server: used to reset cooldown each deploy
   const BUILD_ID = ${JSON.stringify(BUILD_ID)};
 
   const DISPLAY_NAME = {
@@ -563,8 +566,8 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     log: document.getElementById("log"),
     inp: document.getElementById("inp"),
     send: document.getElementById("send"),
-    tempo: document.getElementById("tempo"),
-    tempoVal: document.getElementById("tempoVal"),
+    scroll: document.getElementById("scroll"),
+    scrollVal: document.getElementById("scrollVal"),
   };
 
   const POLL_MS = 2500;
@@ -574,7 +577,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   const COOLDOWN_MS = 60 * 60 * 1000;
   const LS_BUILD = "eavesdrop_build_id";
   const LS_LAST = "eavesdrop_last_voice_at";
-  const LS_TEMPO = "eavesdrop_tempo";
 
   function nowMs(){ return Date.now(); }
 
@@ -591,11 +593,8 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   function ensureBuildReset(){
     const prev = localStorage.getItem(LS_BUILD) || "";
     if (prev !== BUILD_ID){
-      // new deploy -> reset cooldown + keep UI clean
       localStorage.setItem(LS_BUILD, BUILD_ID);
       localStorage.removeItem(LS_LAST);
-      // tempo we keep (or reset if you want): uncomment next line to reset tempo too
-      // localStorage.removeItem(LS_TEMPO);
     }
   }
 
@@ -624,31 +623,9 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }
   }
 
-  // ===== tempo slider affects typing speed =====
-  let tempo = 50; // 0..100
-  function pad3(n){ return String(n|0).padStart(3,"0"); }
-
-  function loadTempo(){
-    const saved = Number(localStorage.getItem(LS_TEMPO));
-    if (Number.isFinite(saved)) tempo = Math.max(0, Math.min(100, saved));
-    el.tempo.value = String(tempo);
-    el.tempoVal.textContent = pad3(tempo);
-  }
-  function saveTempo(v){
-    tempo = Math.max(0, Math.min(100, v|0));
-    localStorage.setItem(LS_TEMPO, String(tempo));
-    el.tempoVal.textContent = pad3(tempo);
-  }
-
-  function tempoToSpeedFactor(){
-    // 0 -> slow (x1.8 delays), 50 -> normal (x1.0), 100 -> fast (x0.55)
-    const t = tempo / 100;
-    return 1.8 - 1.25 * t; // 1.8 .. 0.55
-  }
-
-  // typing base
-  const BASE_TYPE_MIN_MS = 8;
-  const BASE_TYPE_MAX_MS = 22;
+  // typing
+  const TYPE_MIN_MS = 8;
+  const TYPE_MAX_MS = 22;
   const PUNCT_PAUSE_MS = 110;
   const NEWLINE_PAUSE_MS = 150;
 
@@ -666,21 +643,17 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     caret.textContent = "█";
     targetEl.appendChild(caret);
 
-    const factor = tempoToSpeedFactor();
-    const TYPE_MIN_MS = Math.max(1, Math.round(BASE_TYPE_MIN_MS * factor));
-    const TYPE_MAX_MS = Math.max(TYPE_MIN_MS + 1, Math.round(BASE_TYPE_MAX_MS * factor));
-
     for (let i=0;i<fullText.length;i++){
       const ch = fullText[i];
       caret.insertAdjacentText("beforebegin", ch);
-      scrollBottom();
-
+      updateScrollSliderFromLog(); // keep slider synced
       let delay = randInt(TYPE_MIN_MS, TYPE_MAX_MS);
-      if (/[.,!?]/.test(ch)) delay += Math.round(PUNCT_PAUSE_MS * factor);
-      if (ch === "\\n") delay += Math.round(NEWLINE_PAUSE_MS * factor);
+      if (/[.,!?]/.test(ch)) delay += PUNCT_PAUSE_MS;
+      if (ch === "\\n") delay += NEWLINE_PAUSE_MS;
       await new Promise(r => setTimeout(r, delay));
     }
     caret.remove();
+    updateScrollSliderFromLog();
   }
 
   async function addMessage(from, text, isInstant=false){
@@ -692,6 +665,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       el.log.appendChild(div);
       if (isInstant) div.textContent = String(text||"");
       else await typeInto(div, String(text||""));
+      updateScrollSliderFromLog();
       return;
     }
 
@@ -706,6 +680,8 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 
     if (isInstant) span.textContent = String(text||"");
     else await typeInto(span, String(text||""));
+
+    updateScrollSliderFromLog();
   }
 
   async function getJson(url){
@@ -741,6 +717,52 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   let queue = Promise.resolve();
   const enqueue = (fn) => (queue = queue.then(fn).catch(()=>{}));
 
+  // ===== custom scroll slider logic =====
+  let stickToBottom = true;
+
+  function getMaxScroll(){
+    return Math.max(0, el.log.scrollHeight - el.log.clientHeight);
+  }
+
+  function updateScrollSliderFromLog(){
+    const max = getMaxScroll();
+    const top = el.log.scrollTop;
+
+    // if user is near bottom, stay pinned
+    const nearBottom = max - top < 4;
+    if (nearBottom) stickToBottom = true;
+
+    const val = max === 0 ? 1000 : Math.round((top / max) * 1000);
+    el.scroll.value = String(val);
+
+    if (max === 0) el.scrollVal.textContent = "END";
+    else if (val >= 995) el.scrollVal.textContent = "END";
+    else el.scrollVal.textContent = String(val).padStart(4,"0");
+  }
+
+  function setLogScrollFromSlider(){
+    const max = getMaxScroll();
+    const v = Number(el.scroll.value || 0);
+    const top = max === 0 ? 0 : Math.round((v / 1000) * max);
+    stickToBottom = v >= 995;
+    el.log.scrollTop = top;
+    updateScrollSliderFromLog();
+  }
+
+  function maybeAutoScroll(){
+    if (stickToBottom) scrollBottom();
+  }
+
+  el.log.addEventListener("scroll", () => {
+    // if user manually scrolls up -> unstick
+    const max = getMaxScroll();
+    const top = el.log.scrollTop;
+    stickToBottom = (max - top) < 4;
+    updateScrollSliderFromLog();
+  });
+
+  el.scroll.addEventListener("input", () => setLogScrollFromSlider());
+
   async function loadHistory(){
     setStatus("LOADING");
     const j = await getJson("/history?limit=250");
@@ -750,7 +772,10 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     for (const m of (j.items || [])){
       await addMessage(m.from, m.text, true);
     }
+
     scrollBottom();
+    stickToBottom = true;
+    updateScrollSliderFromLog();
     setStatus("LIVE");
   }
 
@@ -763,6 +788,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
         for (const m of items){
           lastId = Math.max(lastId, m.id || lastId);
           await addMessage(m.from, m.text, false);
+          maybeAutoScroll();
         }
       }
     }catch(e){
@@ -783,7 +809,8 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 
     el.inp.value = "";
     await addMessage("USER", text, true);
-    scrollBottom();
+    stickToBottom = true;
+    maybeAutoScroll();
 
     try{
       setStatus("SENDING");
@@ -792,7 +819,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }catch(e){
       setStatus("LIVE");
       if (e && e.status === 429 && e.waitMs){
-        // align local timer with server cooldown
         setLastVoice(Date.now() - (COOLDOWN_MS - e.waitMs));
         updateCooldownUI();
       }
@@ -801,12 +827,9 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
   }
 
   enqueue(async () => {
-    ensureBuildReset();        // ✅ reset cooldown after deploy
-    loadTempo();               // slider state
+    ensureBuildReset();
     updateCooldownUI();
     setInterval(updateCooldownUI, 1000);
-
-    el.tempo.addEventListener("input", () => saveTempo(Number(el.tempo.value)));
 
     try{ await getJson("/start"); }catch(e){}
     await loadHistory();
@@ -815,6 +838,9 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     el.inp.addEventListener("keydown", (e) => {
       if (e.key === "Enter") enqueue(sendVoice);
     });
+
+    // keep slider sane on resizes
+    window.addEventListener("resize", () => updateScrollSliderFromLog());
 
     setInterval(() => enqueue(pollNew), POLL_MS);
   });
