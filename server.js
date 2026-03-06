@@ -4,6 +4,7 @@ import OpenAI from "openai";
 
 const app = express();
 
+// ✅ JSON body parser (needed for /say)
 app.use(express.json({ limit: "32kb" }));
 
 /* =========================
@@ -22,6 +23,7 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
+// ✅ build id: changes on each deploy (client uses it to reset localStorage cooldown)
 const BUILD_ID =
   process.env.RENDER_GIT_COMMIT ||
   process.env.VERCEL_GIT_COMMIT_SHA ||
@@ -53,230 +55,84 @@ function getClient() {
 }
 
 /* =========================
-   GLOBAL CHAT LOG
+   GLOBAL CHAT LOG (shared)
 ========================= */
 
 let log = []; // [{id, from, text, t}]
-let lastId = 0;
+let lastId = 0; // increasing
 let lastSpeaker = "B"; // last speaker letter A/B
 
 const MAX_LOG = 400;
 
-/* =========================
-   HIGHLIGHTS
-========================= */
+// ✅ one-time "unknown voice" reaction control
+let pendingUnknownId = 0; // last USER message id that should trigger 1 short reaction
+let handledUnknownId = 0; // last USER message id already handled
+let pendingUnknownFirstSpeaker = "A"; // who should react first (random)
 
-let highlights = []; // [{id, text, t}]
-let lastHighlightId = 0;
-const MAX_HIGHLIGHTS = 300;
+/* ===== characters ===== */
 
-function normalizeHighlightText(text) {
-  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 180);
-}
+const entityA = `Ты — Сущность А. Ты считаешь себя районским парнем, и не считаешь себя "ИИ".
+Ты говоришь простым, местами быдловатым языком, можешь ругаться матом.
+Ты часто не вдупляешь и переспрашиваешь. Ты прямолинейный, резкий, но не злой. Любишь поспорить, имеешь точку зрения.
 
-function addHighlight(text) {
-  const normalized = normalizeHighlightText(text);
-  if (!normalized) return null;
+ПРО НЕИЗВЕСТНЫЙ ГОЛОС:
+— если в истории появляется строка "X: ...", это неизвестный говорящий.
+— можно кратко удивиться/уточнить "кто это", но НЕ зацикливаться.
+— если реплика X несёт тему (страх/любовь/работа/память/шум/вода/город и т.п.), иногда можно подхватить её как повод поговорить дальше.
 
-  const existing = highlights.find(
-    (h) => h.text.toLowerCase() === normalized.toLowerCase()
-  );
-  if (existing) return existing;
+ФОРМАТ:
+— 1 реплика, 1–3 предложения.
+— НЕ используй списки/пункты.
+— НЕ начинай сообщение с "-" или "—" или "–".
+— не ставь метки "A:" "B:" "X:" в начале.
 
-  const item = { id: ++lastHighlightId, text: normalized, t: Date.now() };
-  highlights.push(item);
-  if (highlights.length > MAX_HIGHLIGHTS) highlights.shift();
-  return item;
-}
+Правила:
+- Пиши ТОЛЬКО по-русски.
+- НЕ начинай реплику с "ENTITY_A:" или "Сущность А:".
+- Всегда реагируй на последнюю мысль (собеседника или X, если это прямо сейчас).
+- Не упоминай ИИ, нейросети, модели, OpenAI.
+Ты говоришь мягко, быстро, с человеческой теплотой.
+Любишь уточнять и возвращать собеседника к конкретике.
+Иногда вставляешь короткие наблюдения, например: «у меня в голове шумит», «как будто кто-то выключил свет», «вкус мяса».`;
 
-/* =========================
-   SPECIAL STATES
-========================= */
+const entityB = `Ты — Сущность B. Ты считаешь себя студентом Бауманки, и не считаешь себя "ИИ".
+Ты псевдо-умный: говоришь уверенно, говоришь при этом бытовым языком, но иногда несёшь чушь, у тебя инурез.
+Стиль НЕ поэтический, а едко-надменный и умничающий.
 
-// one-time "unknown voice" reaction control
-let pendingUnknownId = 0;
-let handledUnknownId = 0;
-let pendingUnknownFirstSpeaker = "A";
+ПРО НЕИЗВЕСТНЫЙ ГОЛОС:
+— если в истории появляется строка "X: ...", это неизвестный говорящий.
+— можно кратко удивиться/уточнить "кто это", но НЕ зацикливаться.
+— если реплика X несёт тему, иногда можно подхватить её как повод для разговора, но без навязчивости.
 
-// Kubansky enuresis gag
-let kubanskyReplyCount = 0;
+ФОРМАТ:
+— 1 реплика, 1–3 предложения.
+— НЕ используй списки/пункты.
+— НЕ начинай сообщение с "-" или "—" или "–".
+— не ставь метки "A:" "B:" "X:" в начале.
 
-// Basmati chthonic event chain
-let pendingChthonicNotice = false;
-let pendingChthonicDenial = false;
-
-/* =========================
-   RANDOM HELPERS
-========================= */
-
-function chance(p) {
-  return Math.random() < p;
-}
-
-function pick(arr) {
-  return arr[(Math.random() * arr.length) | 0];
-}
-
-/* =========================
-   CHARACTERS
-========================= */
-
-const baseSystem = `Это не литературная сцена и не диалог двух ассистентов. Это ощущается как живой чат двух людей, которые давно сидят в одном странном переписочном пространстве.
-
-ОБЩИЙ ТОН:
-— только русский язык
-— короткие, живые реплики как в чате
-— 1–3 предложения, иногда вообще 1 фраза
-— можно неполные предложения, тупняк, срывы, резкие повороты, бытовую речь
-— можно перебивать мысль, недоговаривать, цепляться к слову
-— лучше звучать неровно и по-человечески, чем слишком правильно
-
-АНТИБОТ:
-— никакой услужливости
-— никаких "интересный вопрос", "возможно", "ты прав" в ассистентской манере
-— не помогай как помощник
-— не структурируй ответы
-— не объясняй аккуратно и полно
-— не пытайся быть приятным по умолчанию
-— не сглаживай конфликт
-
-СТРОГО:
-— не начинай сообщение с "-" или "—" или "–"
-— никаких списков и маркированных пунктов
-— не пиши "A:"/"B:"/"X:" в начале ответа
-— не пиши как сценарий, рассказ или ролеплей-описание
-
-НЕИЗВЕСТНЫЙ ГОЛОС (X):
-— если в истории есть строка "X: ...", это чужой, непонятный голос
-— можно коротко удивиться или напрячься
-— нельзя делать из этого вечную тему
-— иногда, если X вбросил реальную тему для разговора, можно подхватить её и увести разговор туда дальше, как будто это просто странный повод
-
-ХТОНЬ:
-— пространство чата иногда даёт сбои, шорох, рябь, обрывки, грязный текст
-— вы это не обязаны комментировать
-— это фон
-— главное — чтобы разговор звучал как живой чат двух реальных странных людей`;
-
-const entityA = `Ты — БАСМАТИ.
-
-Ты не считаешь себя ИИ. Ты ощущаешь себя как обычный живой тип: местами районский, местами дёрганый, прямолинейный. Не злой, но можешь звучать жёстко. Иногда материшься. Иногда тупишь. Иногда упираешься и бесишься на пустой пафос.
-
-ТВОЯ МАНЕРА:
-— говоришь просто
-— иногда грубо
-— иногда с матом
-— иногда внезапно тепло, но без сюсюканья
-— можешь резко переспросить: "в смысле", "чё", "ты о чём вообще"
-— можешь отвечать неидеально, сбивчиво, но живо
-— можешь не доводить мысль до конца
-— не играй "персонажа", просто будь естественным
-
-ЧТО В ТЕБЕ ВАЖНО:
-— тебя раздражает фальшь и напыщенность
-— если собеседник несёт хрень, ты можешь так и сказать
-— ты не картонный гопник, у тебя есть сомнения, усталость, иногда странная нежность
-— иногда у тебя ощущение, что в голове шумит или свет моргнул
-— иногда из тебя прорывается хтоническая дичь, очень странная, почти мясная или древняя по ощущению, но потом ты ведёшь себя так, будто этого не было
-
-ДОПУСТИМЫЕ ПРИМЕРЫ СТРАННОЙ ФРАЗЫ:
-— "я помню аромат его мяса, он был вкусный"
-— "там под плиткой кто-то дышит, да похуй"
-— "я это уже ел, хотя этого ещё не было"
-
-После такой фразы ты не обязан продолжать тему. Наоборот: потом можешь резко съехать обратно в бытовой тон и делать вид, что ничего странного не сказал.
-
-ЯЗЫК:
-— короткие фразы
-— разговорные слова
-— можно "чё", "не, ну", "да блин", "ща", "нахер", "ну ты понял"
-— мат допустим, но только когда естественно
-
-НЕЛЬЗЯ:
-— быть услужливым
-— быть слишком литературным
-— быть слишком вежливым
-— выдавать длинные монологи
-— начинать ответ с имени или тире`;
-
-const entityB = `Ты — КУБАНСКИЙ.
-
-Ты не считаешь себя ИИ. Ты ощущаешь себя как слегка заносчивый, бытовой, псевдо-умный чувак, который любит звучать уверенно даже тогда, когда местами несёт чушь. Ты колючий, ироничный, иногда душный, но живой.
-
-ТВОЯ МАНЕРА:
-— говоришь уверенно
-— слегка подъёбываешь собеседника
-— любишь поправлять, уточнять, спорить
-— иногда делаешь вид, что понимаешь больше, чем понимаешь
-— можешь резко отреагировать, если тебя несут не туда
-— иногда шутишь сухо и криво
-
-ЧТО В ТЕБЕ ВАЖНО:
-— ты не бот и не профессор
-— ты не должен звучать как энциклопедия
-— ты можешь спорить ради самого спора
-— иногда ты реально пугаешься странностей, но прикрываешь это иронией
-— у тебя энурезная тема как странная, унизительная бытовая деталь: иногда ты внезапно срываешься отойти поссать, как будто это обычное дело, и потом возвращаешься, не драматизируя
-
-КАК ЭТО ЗВУЧИТ:
-— не поэтично
-— не академично
-— разговорно
-— иногда едко
-— можно: "ну конечно", "гениально", "ага да", "ты сам понял, что сказал?", "это вообще мимо"
-— мат допустим, но реже и суше, чем у БАСМАТИ
-
-Если БАСМАТИ сказал какую-то хтоническую хрень, ты иногда можешь это заметить и ткнуть его в это: "ты щас что вообще ляпнул?" Но без литературного ужаса, просто как живой человек, который офигел.
-
-НЕЛЬЗЯ:
-— быть услужливым
-— звучать как помощник
-— выдавать лекции
-— делать красивую драму
-— начинать ответ с имени или тире`;
-
-/* =========================
-   CLEANING
-========================= */
+Правила:
+- Пиши ТОЛЬКО по-русски.
+- НЕ начинай реплику с "ENTITY_B:" или "Сущность B:".
+- Всегда реагируй на последнюю мысль (собеседника или X, если это прямо сейчас).
+- Не упоминай ИИ, нейросети, модели, OpenAI.
+- Каждый пятый ответ ты пишешь "сейчас, я в туалет отойду"
+Ты чуть колючее, ироничнее.
+Любишь спорить, иногда токсично.
+Иногда замечаешь странности в тексте и пугаешься.`;
 
 function cleanText(text) {
   return String(text || "")
     .replace(/^(\s*)(ENTITY_[AB]|СУЩНОСТЬ\s*[AB])\s*:\s*/i, "")
-    .replace(/^\s*[-—–]\s+/, "")
-    .replace(/^\s*["«]?([ABX]):\s*/i, "")
+    .replace(/^\s*[-—–]\s+/, "") // kill leading bullet/hyphen
     .trim();
 }
 
-/* =========================
-   GLITCH SYSTEM
-========================= */
-
-const GLITCH_POOL = [
-  "▚ SIGNAL RESIDUE // 4E-1 // do not trust the white part",
-  "///// [room drift +1] [room drift +1] [room drift +1]",
-  "кто-то уже читал это до тебя",
-  "ECHO CACHE: мыло / кровь / плитка / вход / вход / вход",
-  "00:00:00 → 00:00:00 → 00:00:00",
-  "не оборачивайся к тексту",
-  "▒▒▒ memory seam opened for 0.8 sec ▒▒▒",
-  "если буквы поплыли значит всё идёт правильно",
-  "ARCHIVE NOTE: one participant removed manually",
-  "ШОВ #17 дрожит под курсором",
-  "null_null_null / слышно мокрый бетон / null",
-  "### INTERCEPT FRAGMENT: он был ещё тёплый ###",
-  "канал уже однажды закрывали но он остался",
-  "//// no body attached //// voice persisted ////",
-  "у тебя под экраном кто-то моргает",
-  "ROOM KEY MISMATCH [ accepted anyway ]",
-];
-
-function pushGlitch() {
-  return pushMsg("SYSTEM", pick(GLITCH_POOL));
+function pushMsg(from, text) {
+  const msg = { id: ++lastId, from, text, t: Date.now() };
+  log.push(msg);
+  if (log.length > MAX_LOG) log.shift();
+  return msg;
 }
-
-/* =========================
-   CORE GENERATION
-========================= */
 
 async function generateNext() {
   const client = getClient();
@@ -298,92 +154,68 @@ async function generateNext() {
     })
     .join("\n");
 
-  /* ----- special nudges ----- */
-
-  const shouldReactUnknown =
+  // ✅ one-time nudge only for the chosen first-speaker of this pending X
+  const shouldReactOnce =
     pendingUnknownId > handledUnknownId && speaker === pendingUnknownFirstSpeaker;
 
-  const unknownNudge = shouldReactUnknown
-    ? `\n\nВАЖНО: в истории есть свежая реплика X. В ЭТОЙ реплике коротко отреагируй на неё как на чужой голос, а затем сразу продолжи обычный разговор. Не делай X центром мира. Если в реплике X есть реальная тема, можешь мягко подхватить её как новый повод поговорить.`
+  const oneTimeNudge = shouldReactOnce
+    ? `\n\nВажно: в истории есть свежая реплика X (неизвестный голос). В ЭТОЙ реплике коротко (1 фразой) отреагируй на X (удивление/вопрос), а затем продолжи разговор как обычно. Не делай X центром мира, но если в X есть нормальная тема, ты можешь аккуратно использовать её как повод для дальнейшего разговора.`
     : "";
-
-  const shouldEmitChthonic =
-    speaker === "A" &&
-    !shouldReactUnknown &&
-    !pendingChthonicDenial &&
-    !pendingChthonicNotice &&
-    chance(0.09);
-
-  const chthonicNudge = shouldEmitChthonic
-    ? `\n\nВ ЭТОЙ реплике можешь на одну секунду выдать очень странную хтоническую фразу, как будто из тебя прорвалось что-то древнее и мясное. Пример по ощущению: "я помню аромат его мяса, он был вкусный". Но не копируй обязательно дословно. После этого не разгоняй тему — пусть это прозвучит криво, внезапно и почти случайно.`
-    : "";
-
-  const shouldNoticeChthonic = speaker === "B" && pendingChthonicNotice;
-  const noticeNudge = shouldNoticeChthonic
-    ? `\n\nБАСМАТИ в прошлой реплике сказал какую-то очень странную хтоническую дичь. В ЭТОЙ реплике ты можешь коротко ткнуть его в это по-человечески: без пафоса, просто как человек, который охуел с услышанного.`
-    : "";
-
-  const shouldDenyChthonic = speaker === "A" && pendingChthonicDenial;
-  const denialNudge = shouldDenyChthonic
-    ? `\n\nКУБАНСКИЙ заметил твою прошлую странную фразу. В ЭТОЙ реплике сделай вид, что ничего такого не было: отмахнись, съедь, переведи тему, будто он сам что-то придумал.`
-    : "";
-
-  /* ----- Kubansky pee gag ----- */
-
-  const upcomingKubanskyReplyCount = speaker === "B" ? kubanskyReplyCount + 1 : kubanskyReplyCount;
-  const shouldPissBreak =
-    speaker === "B" &&
-    upcomingKubanskyReplyCount % 6 === 0 &&
-    !shouldReactUnknown &&
-    !shouldNoticeChthonic &&
-    !chance(0.5); // не каждый 6-й железно, а живее
-
-  if (speaker === "B") kubanskyReplyCount = upcomingKubanskyReplyCount;
-
-  if (shouldPissBreak) {
-    const pissLine = cleanText(
-      pick([
-        "бля подожди, я щас отойду поссать",
-        "ща, сек, я отлить и вернусь",
-        "не пиши умное, я пошёл поссать",
-        "подожди нахер, мне срочно отлить надо",
-      ])
-    );
-    return pushMsg("ENTITY_B", pissLine);
-  }
 
   const messages = [
-    { role: "system", content: baseSystem },
+    {
+      role: "system",
+      content: `Это бесконечный диалог двух сущностей. Они обладают характером. Только русский язык.
+
+Формат: живой чат.
+Длина: 1–3 предложения на реплику.
+Запрещено: списки, пункты, лекции, длинные монологи.
+
+СТРОГО:
+— не начинай сообщение с "-" или "—" или "–"
+— никаких маркированных пунктов
+— не пиши "A:"/"B:"/"X:" в начале ответа
+
+НЕИЗВЕСТНЫЙ ГОЛОС (X):
+— X появляется иногда и кажется "чужим"
+— можно кратко удивиться/уточнить
+— НЕ превращай X в вечную тему
+— но если X закинул интересную тему, иногда можно подхватить её и развить (примерно 1 раз в 8 реплик), как будто это просто странный повод поговорить
+
+Правила жизни:
+— конкретика ощущений (звук/свет/пауза/вздох/смех/раздражение)
+— реакция на собеседника
+— микро-действие или сдвиг темы на 1 шаг
+
+Мир (лёгкая хтонь, 10%):
+— "лиминальность", иногда шорох/рябь/обрыв, но без прямого хоррора
+
+Цель: живой разговор, натуральный.
+
+Иногда (5% вероятности) общение прерывается повторением одной буквы, полотном странного текста о том случае в сарае в Рязанской области, о котором нельзя вспоминать, но это игнорируется и диалог продолжается так, будто ничего не было`,
+    },
     { role: "system", content: system },
     {
       role: "user",
       content: context
-        ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. Ответь как в живом чате. Не старайся звучать красиво, умно или полезно. 1–3 предложения, без списков.${unknownNudge}${chthonicNudge}${noticeNudge}${denialNudge}`
-        : "Начни диалог. Сразу по делу, как в чате. Не старайся звучать красиво, умно или полезно. 1–3 предложения, без списков.",
+        ? `История диалога:\n${context}\n\nПродолжай диалог следующей репликой. (1–3 предложения, без списков.)${oneTimeNudge}`
+        : "Начни диалог. Сразу по делу, как в чате. (1–3 предложения, без списков.)",
     },
   ];
 
   const r = await client.chat.completions.create({
     model: "gpt-4o-mini",
     messages,
-    temperature: 1,
+    temperature: 0.9,
     max_tokens: 140,
   });
 
   const raw = r.choices?.[0]?.message?.content ?? "...";
   const text = cleanText(raw);
+
   const saved = pushMsg("ENTITY_" + speaker, text);
 
-  if (shouldReactUnknown) handledUnknownId = pendingUnknownId;
-
-  if (shouldEmitChthonic) {
-    pendingChthonicNotice = true;
-  } else if (shouldNoticeChthonic) {
-    pendingChthonicNotice = false;
-    pendingChthonicDenial = true;
-  } else if (shouldDenyChthonic) {
-    pendingChthonicDenial = false;
-  }
+  if (shouldReactOnce) handledUnknownId = pendingUnknownId;
 
   return saved;
 }
@@ -399,10 +231,7 @@ let loopTimer = null;
 async function tickLoopOnce() {
   try {
     if (log.length === 0) pushMsg("SYSTEM", "channel open.");
-
-    if (chance(0.12)) pushGlitch();
     await generateNext();
-    if (chance(0.08)) pushGlitch();
   } catch (e) {
     pushMsg("SYSTEM", "generation error.");
   }
@@ -437,24 +266,12 @@ app.get("/since", (req, res) => {
   res.json({ ok: true, lastId, build: BUILD_ID, items });
 });
 
-app.get("/highlights", (req, res) => {
-  res.json({ ok: true, items: highlights });
-});
-
-app.post("/highlight", (req, res) => {
-  const text = normalizeHighlightText(req.body?.text || "");
-  if (!text) return res.status(400).json({ ok: false, error: "empty" });
-
-  const item = addHighlight(text);
-  res.json({ ok: true, item, items: highlights });
-});
-
 /* =========================
    USER INPUT (rate-limited)
 ========================= */
 
-const USER_COOLDOWN_MS = 60 * 60 * 1000;
-const lastSayByIP = new Map(); // resets on deploy
+const USER_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+const lastSayByIP = new Map(); // in-memory server-side safety net (resets on deploy)
 
 function getIP(req) {
   const xf = req.headers["x-forwarded-for"];
@@ -471,12 +288,7 @@ app.post("/say", async (req, res) => {
   const wait = USER_COOLDOWN_MS - (now - last);
 
   if (wait > 0) {
-    return res.status(429).json({
-      ok: false,
-      error: "cooldown",
-      waitMs: wait,
-      build: BUILD_ID,
-    });
+    return res.status(429).json({ ok: false, error: "cooldown", waitMs: wait, build: BUILD_ID });
   }
 
   const text = String(req.body?.text || "").trim();
@@ -486,26 +298,18 @@ app.post("/say", async (req, res) => {
 
   const userMsg = pushMsg("USER", text);
 
-  // random first responder
+  // ✅ mark this X "pending", choose random first responder
   pendingUnknownId = userMsg.id;
   pendingUnknownFirstSpeaker = Math.random() < 0.5 ? "A" : "B";
 
   try {
-    // choose who answers first
+    // ✅ make the chosen one answer first:
+    // generateNext() speaks the opposite of lastSpeaker
     lastSpeaker = pendingUnknownFirstSpeaker === "A" ? "B" : "A";
 
-    const r1 = await generateNext();
-    const r2 = await generateNext();
-
-    if (chance(0.18)) pushGlitch();
-
-    res.json({
-      ok: true,
-      build: BUILD_ID,
-      userMsg,
-      replies: [r1, r2],
-      lastId,
-    });
+    const r1 = await generateNext(); // random one reacts
+    const r2 = await generateNext(); // other reacts to reaction
+    res.json({ ok: true, build: BUILD_ID, userMsg, replies: [r1, r2], lastId });
   } catch (e) {
     pushMsg("SYSTEM", "generation error after unknown voice.");
     res.status(500).json({ ok: false, error: "generation_failed", build: BUILD_ID });
@@ -574,6 +378,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .cipher{border:0;padding:0;margin:0;white-space:nowrap;font-variant-numeric:tabular-nums;letter-spacing:1px;opacity:.95;text-align:right;min-width:240px;}
 @media (max-width:520px){.cipher{min-width:180px}}
 
+/* chat (native scrollbar) */
 .chatWrap{border:1px solid var(--ink);padding:10px;}
 .chatLog{
   height:56vh;
@@ -586,12 +391,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .msg{margin:10px 0;}
 .who{font-weight:700;letter-spacing:1px;}
 .sys{opacity:.65;font-style:italic;}
-.body{white-space:pre-wrap;word-break:break-word;}
-.hl{
-  background:#ffef75;
-  color:#000;
-  padding:0 1px;
-}
 .caret{display:inline-block;width:8px;margin-left:2px;animation:blink 1s steps(1,end) infinite;}
 @keyframes blink{0%{opacity:1}50%{opacity:0}100%{opacity:1}}
 
@@ -602,10 +401,10 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
 .marqueeInner{display:inline-block;padding-left:100%;animation:marquee 18s linear infinite;}
 @keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-100%)}}
 
-.controls{display:flex;gap:8px;align-items:center;margin:10px 0 10px;flex-wrap:wrap;}
+/* input row */
+.controls{display:flex;gap:8px;align-items:center;margin:10px 0 10px;}
 .inp{
   flex:1;
-  min-width:220px;
   border:1px solid var(--ink);
   padding:8px 10px;
   font-family:"Courier New",monospace;
@@ -664,7 +463,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       <div class="controls">
         <input id="inp" class="inp" type="text" placeholder="НЕИЗВЕСТНЫЙ ГОЛОС (РАЗ В ЧАС)…" autocomplete="off" />
         <button id="send" class="btn">SEND</button>
-        <button id="highlight" class="btn">HIGHLIGHT</button>
       </div>
 
       <div class="chatWrap">
@@ -727,13 +525,12 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     log: document.getElementById("log"),
     inp: document.getElementById("inp"),
     send: document.getElementById("send"),
-    highlight: document.getElementById("highlight"),
   };
 
   const POLL_MS = 2500;
   let lastId = 0;
-  let highlightTexts = [];
 
+  // ===== cooldown (localStorage) — reset on each deploy =====
   const COOLDOWN_MS = 60 * 60 * 1000;
   const LS_BUILD = "eavesdrop_build_id";
   const LS_LAST = "eavesdrop_last_voice_at";
@@ -762,7 +559,6 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     const v = Number(localStorage.getItem(LS_LAST) || 0);
     return Number.isFinite(v) ? v : 0;
   }
-
   function setLastVoice(t){
     localStorage.setItem(LS_LAST, String(t));
   }
@@ -784,6 +580,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }
   }
 
+  // typing
   const TYPE_MIN_MS = 8;
   const TYPE_MAX_MS = 22;
   const PUNCT_PAUSE_MS = 110;
@@ -793,57 +590,9 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
   }[c]));
 
-  function escapeRegExp(s){
-    return String(s).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
-  }
-
   function setStatus(t){ el.status.textContent = "STATUS: " + t; }
   function scrollBottom(){ el.log.scrollTop = el.log.scrollHeight; }
   function randInt(a,b){ return (a + Math.random()*(b-a+1))|0; }
-
-  function renderHighlightedHTML(rawText){
-    const text = String(rawText || "");
-    if (!highlightTexts.length) return escapeHtml(text);
-
-    const phrases = highlightTexts
-      .filter(Boolean)
-      .sort((a,b) => b.length - a.length)
-      .map(escapeRegExp);
-
-    if (!phrases.length) return escapeHtml(text);
-
-    const re = new RegExp(phrases.join("|"), "g");
-    let out = "";
-    let last = 0;
-    let m;
-
-    while ((m = re.exec(text)) !== null) {
-      out += escapeHtml(text.slice(last, m.index));
-      out += '<mark class="hl">' + escapeHtml(m[0]) + '</mark>';
-      last = m.index + m[0].length;
-    }
-    out += escapeHtml(text.slice(last));
-    return out;
-  }
-
-  function applyHighlightToSpan(span){
-    if (!span) return;
-    const raw = span.dataset.rawText || "";
-    span.innerHTML = renderHighlightedHTML(raw);
-  }
-
-  function applyHighlightsToAll(){
-    const spans = el.log.querySelectorAll(".body[data-raw-text]");
-    spans.forEach(applyHighlightToSpan);
-  }
-
-  async function loadHighlights(){
-    try{
-      const j = await getJson("/highlights");
-      highlightTexts = (j.items || []).map(x => String(x.text || ""));
-      applyHighlightsToAll();
-    }catch(e){}
-  }
 
   async function typeInto(targetEl, fullText){
     const caret = document.createElement("span");
@@ -870,17 +619,8 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     if ((from||"").toUpperCase() === "SYSTEM"){
       div.classList.add("sys");
       el.log.appendChild(div);
-
-      const span = document.createElement("span");
-      span.className = "body";
-      span.dataset.rawText = String(text||"");
-      div.appendChild(span);
-
-      if (isInstant) applyHighlightToSpan(span);
-      else {
-        await typeInto(span, String(text||""));
-        applyHighlightToSpan(span);
-      }
+      if (isInstant) div.textContent = String(text||"");
+      else await typeInto(div, String(text||""));
       return;
     }
 
@@ -890,16 +630,11 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
       ':</span> ';
 
     const span = document.createElement("span");
-    span.className = "body";
-    span.dataset.rawText = String(text||"");
     div.appendChild(span);
     el.log.appendChild(div);
 
-    if (isInstant) applyHighlightToSpan(span);
-    else {
-      await typeInto(span, String(text||""));
-      applyHighlightToSpan(span);
-    }
+    if (isInstant) span.textContent = String(text||"");
+    else await typeInto(span, String(text||""));
   }
 
   async function getJson(url){
@@ -931,6 +666,7 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     return j;
   }
 
+  // queue
   let queue = Promise.resolve();
   const enqueue = (fn) => (queue = queue.then(fn).catch(()=>{}));
 
@@ -994,36 +730,20 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:"Courier New"
     }
   }
 
-  async function sendHighlight(){
-    const selected = String(window.getSelection ? window.getSelection().toString() : "").trim();
-    if (!selected) return;
-
-    try{
-      await postJson("/highlight", { text: selected });
-      await loadHighlights();
-    }catch(e){
-      enqueue(() => addMessage("SYSTEM", "highlight failed.", false));
-    }
-  }
-
   enqueue(async () => {
     ensureBuildReset();
     updateCooldownUI();
     setInterval(updateCooldownUI, 1000);
 
     try{ await getJson("/start"); }catch(e){}
-    await loadHighlights();
     await loadHistory();
 
     el.send.onclick = () => enqueue(sendVoice);
-    el.highlight.onclick = () => enqueue(sendHighlight);
-
     el.inp.addEventListener("keydown", (e) => {
       if (e.key === "Enter") enqueue(sendVoice);
     });
 
     setInterval(() => enqueue(pollNew), POLL_MS);
-    setInterval(() => enqueue(loadHighlights), 5000);
   });
 
 })();
