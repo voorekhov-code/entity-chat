@@ -790,8 +790,8 @@ mark.hl-green{background:var(--hl-green);}
     <div class="archiveSlab">
       <div class="slabTop">MOSCOW • RU</div>
       <div class="slabRows">
-        <div class="slabRow">BUILD: 11.01.2026</div>
-        <div class="slabRow">CHANNEL: EAVESDROP</div>
+        <div class="slabRow">BUILD: 06.03.2026</div>
+        <div class="slabRow">CHANNEL: 0_023</div>
       </div>
     </div>
   </div>
