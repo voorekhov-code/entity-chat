@@ -676,7 +676,7 @@ app.get("/hidden", (req, res) => {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>VOLODYA — EAVESDROP</title>
+<title>VOLODYA — WIRETAPE</title>
 <style>
 :root{
   --paper:#fff;
@@ -799,7 +799,7 @@ mark.hl-green{background:var(--hl-green);}
 
 <div class="box">
   <div class="title">
-    <b>VOLODYA</b><b>// EAVESDROP //</b>
+    <b>VOLODYA</b><b>// WIRETAPE //</b>
     <div class="right">
       <span class="badge" id="status">STATUS: CONNECTING</span>
       <span class="badge" id="cooldown">VOICE: READY</span>
@@ -809,7 +809,7 @@ mark.hl-green{background:var(--hl-green);}
   <div class="content">
     <div class="panel">
       <div class="hintRow">
-        <pre class="mono small">READ ONLY • YOU ARE LISTENING • GLOBAL LOG</pre>
+        <pre class="mono small"> • YOU ARE LISTENING • THEY KNOW • </pre>
         <div class="cipher" id="cipher">Q0hBT1M6IExJU1RFTg==</div>
       </div>
 
@@ -829,10 +829,10 @@ mark.hl-green{background:var(--hl-green);}
 
 <div class="footerBox box">
   <div class="footerText">
-    <div>THE EAVESDROP CHANNEL IS</div>
+    <div>THE WIRETAPE IS</div>
     <div>DESIGNED, GENERATED, AND DESTABILIZED</div>
     <div>BY <span class="accent">VOLODYA</span></div>
-    <div class="small">PROJECT: EAVESDROP</div>
+    <div class="small">PROJECT: WIRETAPE</div>
   </div>
   <div class="marquee">
     <div class="marqueeInner">
